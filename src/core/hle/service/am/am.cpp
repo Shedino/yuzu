@@ -52,6 +52,11 @@ enum class LaunchParameterKind : u32 {
     AccountPreselectedUser = 2,
 };
 
+enum class VrMode : u8 {
+    Disabled = 0,
+    Enabled = 1,
+};
+
 constexpr u32 LAUNCH_PARAMETER_ACCOUNT_PRESELECTED_USER_MAGIC = 0xC79497CA;
 
 struct LaunchParameterAccountPreselectedUser {
@@ -229,7 +234,15 @@ IDebugFunctions::IDebugFunctions() : ServiceFramework{"IDebugFunctions"} {
         {20, nullptr, "InvalidateTransitionLayer"},
         {30, nullptr, "RequestLaunchApplicationWithUserAndArgumentForDebug"},
         {40, nullptr, "GetAppletResourceUsageInfo"},
-        {41, nullptr, "SetCpuBoostModeForApplet"},
+        {100, nullptr, "SetCpuBoostModeForApplet"},
+        {110, nullptr, "PushToAppletBoundChannelForDebug"},
+        {111, nullptr, "TryPopFromAppletBoundChannelForDebug"},
+        {120, nullptr, "AlarmSettingNotificationEnableAppEventReserve"},
+        {121, nullptr, "AlarmSettingNotificationDisableAppEventReserve"},
+        {122, nullptr, "AlarmSettingNotificationPushAppEventNotify"},
+        {130, nullptr, "FriendInvitationSetApplicationParameter"},
+        {131, nullptr, "FriendInvitationClearApplicationParameter"},
+        {132, nullptr, "FriendInvitationPushApplicationParameter"},
     };
     // clang-format on
 
@@ -278,10 +291,12 @@ ISelfController::ISelfController(Core::System& system,
         {69, &ISelfController::IsAutoSleepDisabled, "IsAutoSleepDisabled"},
         {70, nullptr, "ReportMultimediaError"},
         {71, nullptr, "GetCurrentIlluminanceEx"},
+        {72, nullptr, "SetInputDetectionPolicy"},
         {80, nullptr, "SetWirelessPriorityMode"},
         {90, &ISelfController::GetAccumulatedSuspendedTickValue, "GetAccumulatedSuspendedTickValue"},
         {91, &ISelfController::GetAccumulatedSuspendedTickChangedEvent, "GetAccumulatedSuspendedTickChangedEvent"},
         {100, nullptr, "SetAlbumImageTakenNotificationEnabled"},
+        {110, nullptr, "SetApplicationAlbumUserData"},
         {1000, nullptr, "GetDebugStorageChannel"},
     };
     // clang-format on
@@ -289,8 +304,8 @@ ISelfController::ISelfController(Core::System& system,
     RegisterHandlers(functions);
 
     auto& kernel = system.Kernel();
-    launchable_event = Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Manual,
-                                                              "ISelfController:LaunchableEvent");
+    launchable_event =
+        Kernel::WritableEvent::CreateEventPair(kernel, "ISelfController:LaunchableEvent");
 
     // This event is created by AM on the first time GetAccumulatedSuspendedTickChangedEvent() is
     // called. Yuzu can just create it unconditionally, since it doesn't need to support multiple
@@ -298,7 +313,7 @@ ISelfController::ISelfController(Core::System& system,
     // suspended if the event has previously been created by a call to
     // GetAccumulatedSuspendedTickChangedEvent.
     accumulated_suspended_tick_changed_event = Kernel::WritableEvent::CreateEventPair(
-        kernel, Kernel::ResetType::Manual, "ISelfController:AccumulatedSuspendedTickChangedEvent");
+        kernel, "ISelfController:AccumulatedSuspendedTickChangedEvent");
     accumulated_suspended_tick_changed_event.writable->Signal();
 }
 
@@ -523,20 +538,19 @@ void ISelfController::GetAccumulatedSuspendedTickChangedEvent(Kernel::HLERequest
 }
 
 AppletMessageQueue::AppletMessageQueue(Kernel::KernelCore& kernel) {
-    on_new_message = Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Manual,
-                                                            "AMMessageQueue:OnMessageRecieved");
-    on_operation_mode_changed = Kernel::WritableEvent::CreateEventPair(
-        kernel, Kernel::ResetType::Automatic, "AMMessageQueue:OperationModeChanged");
+    on_new_message =
+        Kernel::WritableEvent::CreateEventPair(kernel, "AMMessageQueue:OnMessageRecieved");
+    on_operation_mode_changed =
+        Kernel::WritableEvent::CreateEventPair(kernel, "AMMessageQueue:OperationModeChanged");
 }
 
 AppletMessageQueue::~AppletMessageQueue() = default;
 
-const Kernel::SharedPtr<Kernel::ReadableEvent>& AppletMessageQueue::GetMesssageRecieveEvent()
-    const {
+const std::shared_ptr<Kernel::ReadableEvent>& AppletMessageQueue::GetMesssageRecieveEvent() const {
     return on_new_message.readable;
 }
 
-const Kernel::SharedPtr<Kernel::ReadableEvent>& AppletMessageQueue::GetOperationModeChangedEvent()
+const std::shared_ptr<Kernel::ReadableEvent>& AppletMessageQueue::GetOperationModeChangedEvent()
     const {
     return on_operation_mode_changed.readable;
 }
@@ -596,11 +610,11 @@ ICommonStateGetter::ICommonStateGetter(Core::System& system,
         {30, nullptr, "GetHomeButtonReaderLockAccessor"},
         {31, nullptr, "GetReaderLockAccessorEx"},
         {40, nullptr, "GetCradleFwVersion"},
-        {50, nullptr, "IsVrModeEnabled"},
-        {51, nullptr, "SetVrModeEnabled"},
-        {52, nullptr, "SwitchLcdBacklight"},
+        {50, &ICommonStateGetter::IsVrModeEnabled, "IsVrModeEnabled"},
+        {51, &ICommonStateGetter::SetVrModeEnabled, "SetVrModeEnabled"},
+        {52, &ICommonStateGetter::SetLcdBacklighOffEnabled, "SetLcdBacklighOffEnabled"},
         {53, nullptr, "BeginVrModeEx"},
-        {54, nullptr, "EndVrModeEx"},
+        {54, &ICommonStateGetter::EndVrModeEx, "EndVrModeEx"},
         {55, nullptr, "IsInControllerFirmwareUpdateSection"},
         {60, &ICommonStateGetter::GetDefaultDisplayResolution, "GetDefaultDisplayResolution"},
         {61, &ICommonStateGetter::GetDefaultDisplayResolutionChangeEvent, "GetDefaultDisplayResolutionChangeEvent"},
@@ -613,6 +627,7 @@ ICommonStateGetter::ICommonStateGetter(Core::System& system,
         {90, nullptr, "SetPerformanceConfigurationChangedNotification"},
         {91, nullptr, "GetCurrentPerformanceConfiguration"},
         {200, nullptr, "GetOperationModeSystemInfo"},
+        {300, nullptr, "GetSettingsPlatformRegion"},
     };
     // clang-format on
 
@@ -626,7 +641,6 @@ void ICommonStateGetter::GetBootMode(Kernel::HLERequestContext& ctx) {
 
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(RESULT_SUCCESS);
-
     rb.Push<u8>(static_cast<u8>(Service::PM::SystemBootMode::Normal)); // Normal boot mode
 }
 
@@ -650,6 +664,7 @@ void ICommonStateGetter::ReceiveMessage(Kernel::HLERequestContext& ctx) {
         rb.PushEnum<AppletMessageQueue::AppletMessage>(message);
         return;
     }
+
     rb.Push(RESULT_SUCCESS);
     rb.PushEnum<AppletMessageQueue::AppletMessage>(message);
 }
@@ -660,6 +675,48 @@ void ICommonStateGetter::GetCurrentFocusState(Kernel::HLERequestContext& ctx) {
     IPC::ResponseBuilder rb{ctx, 3};
     rb.Push(RESULT_SUCCESS);
     rb.Push(static_cast<u8>(FocusState::InFocus));
+}
+
+void ICommonStateGetter::IsVrModeEnabled(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(RESULT_SUCCESS);
+    rb.PushEnum(VrMode::Disabled);
+}
+
+void ICommonStateGetter::SetVrModeEnabled(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto is_vr_mode_enabled = rp.Pop<bool>();
+
+    LOG_WARNING(Service_AM, "(STUBBED) called. is_vr_mode_enabled={}", is_vr_mode_enabled);
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    if (!is_vr_mode_enabled) {
+        rb.Push(RESULT_SUCCESS);
+    } else {
+        // TODO: Find better error code for this
+        UNIMPLEMENTED_MSG("is_vr_mode_enabled={}", is_vr_mode_enabled);
+        rb.Push(RESULT_UNKNOWN);
+    }
+}
+
+void ICommonStateGetter::SetLcdBacklighOffEnabled(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto is_lcd_backlight_off_enabled = rp.Pop<bool>();
+
+    LOG_WARNING(Service_AM, "(STUBBED) called. is_lcd_backlight_off_enabled={}",
+                is_lcd_backlight_off_enabled);
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
+}
+
+void ICommonStateGetter::EndVrModeEx(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
 }
 
 void ICommonStateGetter::GetDefaultDisplayResolutionChangeEvent(Kernel::HLERequestContext& ctx) {
@@ -699,8 +756,34 @@ void ICommonStateGetter::SetCpuBoostMode(Kernel::HLERequestContext& ctx) {
     apm_sys->SetCpuBoostMode(ctx);
 }
 
-IStorage::IStorage(std::vector<u8> buffer)
-    : ServiceFramework("IStorage"), buffer(std::move(buffer)) {
+IStorageImpl::~IStorageImpl() = default;
+
+class StorageDataImpl final : public IStorageImpl {
+public:
+    explicit StorageDataImpl(std::vector<u8>&& buffer) : buffer{std::move(buffer)} {}
+
+    std::vector<u8>& GetData() override {
+        return buffer;
+    }
+
+    const std::vector<u8>& GetData() const override {
+        return buffer;
+    }
+
+    std::size_t GetSize() const override {
+        return buffer.size();
+    }
+
+private:
+    std::vector<u8> buffer;
+};
+
+IStorage::IStorage(std::vector<u8>&& buffer)
+    : ServiceFramework("IStorage"), impl{std::make_shared<StorageDataImpl>(std::move(buffer))} {
+    Register();
+}
+
+void IStorage::Register() {
     // clang-format off
         static const FunctionInfo functions[] = {
             {0, &IStorage::Open, "Open"},
@@ -713,8 +796,13 @@ IStorage::IStorage(std::vector<u8> buffer)
 
 IStorage::~IStorage() = default;
 
-const std::vector<u8>& IStorage::GetData() const {
-    return buffer;
+void IStorage::Open(Kernel::HLERequestContext& ctx) {
+    LOG_DEBUG(Service_AM, "called");
+
+    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+
+    rb.Push(RESULT_SUCCESS);
+    rb.PushIpcInterface<IStorageAccessor>(*this);
 }
 
 void ICommonStateGetter::GetOperationMode(Kernel::HLERequestContext& ctx) {
@@ -806,7 +894,7 @@ private:
         LOG_DEBUG(Service_AM, "called");
 
         IPC::RequestParser rp{ctx};
-        applet->GetBroker().PushNormalDataFromGame(*rp.PopIpcInterface<IStorage>());
+        applet->GetBroker().PushNormalDataFromGame(rp.PopIpcInterface<IStorage>());
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(RESULT_SUCCESS);
@@ -815,26 +903,25 @@ private:
     void PopOutData(Kernel::HLERequestContext& ctx) {
         LOG_DEBUG(Service_AM, "called");
 
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-
-        const auto storage = applet->GetBroker().PopNormalDataToGame();
+        auto storage = applet->GetBroker().PopNormalDataToGame();
         if (storage == nullptr) {
             LOG_ERROR(Service_AM,
                       "storage is a nullptr. There is no data in the current normal channel");
-
+            IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NO_DATA_IN_CHANNEL);
             return;
         }
 
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IStorage>(std::move(*storage));
+        rb.PushIpcInterface<IStorage>(std::move(storage));
     }
 
     void PushInteractiveInData(Kernel::HLERequestContext& ctx) {
         LOG_DEBUG(Service_AM, "called");
 
         IPC::RequestParser rp{ctx};
-        applet->GetBroker().PushInteractiveDataFromGame(*rp.PopIpcInterface<IStorage>());
+        applet->GetBroker().PushInteractiveDataFromGame(rp.PopIpcInterface<IStorage>());
 
         ASSERT(applet->IsInitialized());
         applet->ExecuteInteractive();
@@ -847,19 +934,18 @@ private:
     void PopInteractiveOutData(Kernel::HLERequestContext& ctx) {
         LOG_DEBUG(Service_AM, "called");
 
-        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-
-        const auto storage = applet->GetBroker().PopInteractiveDataToGame();
+        auto storage = applet->GetBroker().PopInteractiveDataToGame();
         if (storage == nullptr) {
             LOG_ERROR(Service_AM,
                       "storage is a nullptr. There is no data in the current interactive channel");
-
+            IPC::ResponseBuilder rb{ctx, 2};
             rb.Push(ERR_NO_DATA_IN_CHANNEL);
             return;
         }
 
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
         rb.Push(RESULT_SUCCESS);
-        rb.PushIpcInterface<IStorage>(std::move(*storage));
+        rb.PushIpcInterface<IStorage>(std::move(storage));
     }
 
     void GetPopOutDataEvent(Kernel::HLERequestContext& ctx) {
@@ -880,15 +966,6 @@ private:
 
     std::shared_ptr<Applets::Applet> applet;
 };
-
-void IStorage::Open(Kernel::HLERequestContext& ctx) {
-    LOG_DEBUG(Service_AM, "called");
-
-    IPC::ResponseBuilder rb{ctx, 2, 0, 1};
-
-    rb.Push(RESULT_SUCCESS);
-    rb.PushIpcInterface<IStorageAccessor>(*this);
-}
 
 IStorageAccessor::IStorageAccessor(IStorage& storage)
     : ServiceFramework("IStorageAccessor"), backing(storage) {
@@ -911,7 +988,7 @@ void IStorageAccessor::GetSize(Kernel::HLERequestContext& ctx) {
     IPC::ResponseBuilder rb{ctx, 4};
 
     rb.Push(RESULT_SUCCESS);
-    rb.Push(static_cast<u64>(backing.buffer.size()));
+    rb.Push(static_cast<u64>(backing.GetSize()));
 }
 
 void IStorageAccessor::Write(Kernel::HLERequestContext& ctx) {
@@ -922,17 +999,17 @@ void IStorageAccessor::Write(Kernel::HLERequestContext& ctx) {
 
     LOG_DEBUG(Service_AM, "called, offset={}, size={}", offset, data.size());
 
-    if (data.size() > backing.buffer.size() - offset) {
+    if (data.size() > backing.GetSize() - offset) {
         LOG_ERROR(Service_AM,
                   "offset is out of bounds, backing_buffer_sz={}, data_size={}, offset={}",
-                  backing.buffer.size(), data.size(), offset);
+                  backing.GetSize(), data.size(), offset);
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ERR_SIZE_OUT_OF_BOUNDS);
         return;
     }
 
-    std::memcpy(backing.buffer.data() + offset, data.data(), data.size());
+    std::memcpy(backing.GetData().data() + offset, data.data(), data.size());
 
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(RESULT_SUCCESS);
@@ -946,16 +1023,16 @@ void IStorageAccessor::Read(Kernel::HLERequestContext& ctx) {
 
     LOG_DEBUG(Service_AM, "called, offset={}, size={}", offset, size);
 
-    if (size > backing.buffer.size() - offset) {
+    if (size > backing.GetSize() - offset) {
         LOG_ERROR(Service_AM, "offset is out of bounds, backing_buffer_sz={}, size={}, offset={}",
-                  backing.buffer.size(), size, offset);
+                  backing.GetSize(), size, offset);
 
         IPC::ResponseBuilder rb{ctx, 2};
         rb.Push(ERR_SIZE_OUT_OF_BOUNDS);
         return;
     }
 
-    ctx.WriteBuffer(backing.buffer.data() + offset, size);
+    ctx.WriteBuffer(backing.GetData().data() + offset, size);
 
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(RESULT_SUCCESS);
@@ -991,7 +1068,7 @@ void ILibraryAppletCreator::CreateLibraryApplet(Kernel::HLERequestContext& ctx) 
         LOG_ERROR(Service_AM, "Applet doesn't exist! applet_id={}", static_cast<u32>(applet_id));
 
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultCode(-1));
+        rb.Push(RESULT_UNKNOWN);
         return;
     }
 
@@ -1021,13 +1098,13 @@ void ILibraryAppletCreator::CreateTransferMemoryStorage(Kernel::HLERequestContex
     rp.SetCurrentOffset(3);
     const auto handle{rp.Pop<Kernel::Handle>()};
 
-    const auto transfer_mem =
+    auto transfer_mem =
         system.CurrentProcess()->GetHandleTable().Get<Kernel::TransferMemory>(handle);
 
     if (transfer_mem == nullptr) {
         LOG_ERROR(Service_AM, "shared_mem is a nullpr for handle={:08X}", handle);
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultCode(-1));
+        rb.Push(RESULT_UNKNOWN);
         return;
     }
 
@@ -1037,7 +1114,7 @@ void ILibraryAppletCreator::CreateTransferMemoryStorage(Kernel::HLERequestContex
 
     IPC::ResponseBuilder rb{ctx, 2, 0, 1};
     rb.Push(RESULT_SUCCESS);
-    rb.PushIpcInterface(std::make_shared<IStorage>(std::move(memory)));
+    rb.PushIpcInterface<IStorage>(std::move(memory));
 }
 
 IApplicationFunctions::IApplicationFunctions(Core::System& system_)
@@ -1073,14 +1150,21 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_)
         {71, nullptr, "RequestToReboot"},
         {80, nullptr, "ExitAndRequestToShowThanksMessage"},
         {90, &IApplicationFunctions::EnableApplicationCrashReport, "EnableApplicationCrashReport"},
-        {100, nullptr, "InitializeApplicationCopyrightFrameBuffer"},
-        {101, nullptr, "SetApplicationCopyrightImage"},
-        {102, nullptr, "SetApplicationCopyrightVisibility"},
-        {110, nullptr, "QueryApplicationPlayStatistics"},
+        {100, &IApplicationFunctions::InitializeApplicationCopyrightFrameBuffer, "InitializeApplicationCopyrightFrameBuffer"},
+        {101, &IApplicationFunctions::SetApplicationCopyrightImage, "SetApplicationCopyrightImage"},
+        {102, &IApplicationFunctions::SetApplicationCopyrightVisibility, "SetApplicationCopyrightVisibility"},
+        {110, &IApplicationFunctions::QueryApplicationPlayStatistics, "QueryApplicationPlayStatistics"},
+        {111, &IApplicationFunctions::QueryApplicationPlayStatisticsByUid, "QueryApplicationPlayStatisticsByUid"},
         {120, nullptr, "ExecuteProgram"},
         {121, nullptr, "ClearUserChannel"},
         {122, nullptr, "UnpopToUserChannel"},
         {130, &IApplicationFunctions::GetGpuErrorDetectedSystemEvent, "GetGpuErrorDetectedSystemEvent"},
+        {140, nullptr, "GetFriendInvitationStorageChannelEvent"},
+        {141, nullptr, "TryPopFromFriendInvitationStorageChannel"},
+        {150, nullptr, "GetNotificationStorageChannelEvent"},
+        {151, nullptr, "TryPopFromNotificationStorageChannel"},
+        {160, nullptr, "GetHealthWarningDisappearedSystemEvent"},
+        {170, nullptr, "SetHdcpAuthenticationActivated"},
         {500, nullptr, "StartContinuousRecordingFlushForDebug"},
         {1000, nullptr, "CreateMovieMaker"},
         {1001, nullptr, "PrepareForJit"},
@@ -1091,13 +1175,38 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_)
 
     auto& kernel = system.Kernel();
     gpu_error_detected_event = Kernel::WritableEvent::CreateEventPair(
-        kernel, Kernel::ResetType::Manual, "IApplicationFunctions:GpuErrorDetectedSystemEvent");
+        kernel, "IApplicationFunctions:GpuErrorDetectedSystemEvent");
 }
 
 IApplicationFunctions::~IApplicationFunctions() = default;
 
 void IApplicationFunctions::EnableApplicationCrashReport(Kernel::HLERequestContext& ctx) {
     LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
+}
+
+void IApplicationFunctions::InitializeApplicationCopyrightFrameBuffer(
+    Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
+}
+
+void IApplicationFunctions::SetApplicationCopyrightImage(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    IPC::ResponseBuilder rb{ctx, 2};
+    rb.Push(RESULT_SUCCESS);
+}
+
+void IApplicationFunctions::SetApplicationCopyrightVisibility(Kernel::HLERequestContext& ctx) {
+    IPC::RequestParser rp{ctx};
+    const auto is_visible = rp.Pop<bool>();
+
+    LOG_WARNING(Service_AM, "(STUBBED) called, is_visible={}", is_visible);
 
     IPC::ResponseBuilder rb{ctx, 2};
     rb.Push(RESULT_SUCCESS);
@@ -1147,13 +1256,11 @@ void IApplicationFunctions::PopLaunchParameter(Kernel::HLERequestContext& ctx) {
         u64 build_id{};
         std::memcpy(&build_id, build_id_full.data(), sizeof(u64));
 
-        const auto data =
-            backend->GetLaunchParameter({system.CurrentProcess()->GetTitleID(), build_id});
-
+        auto data = backend->GetLaunchParameter({system.CurrentProcess()->GetTitleID(), build_id});
         if (data.has_value()) {
             IPC::ResponseBuilder rb{ctx, 2, 0, 1};
             rb.Push(RESULT_SUCCESS);
-            rb.PushIpcInterface<AM::IStorage>(*data);
+            rb.PushIpcInterface<IStorage>(std::move(*data));
             launch_popped_application_specific = true;
             return;
         }
@@ -1176,7 +1283,7 @@ void IApplicationFunctions::PopLaunchParameter(Kernel::HLERequestContext& ctx) {
         std::vector<u8> buffer(sizeof(LaunchParameterAccountPreselectedUser));
         std::memcpy(buffer.data(), &params, buffer.size());
 
-        rb.PushIpcInterface<AM::IStorage>(buffer);
+        rb.PushIpcInterface<IStorage>(std::move(buffer));
         launch_popped_account_preselect = true;
         return;
     }
@@ -1310,12 +1417,16 @@ void IApplicationFunctions::GetPseudoDeviceId(Kernel::HLERequestContext& ctx) {
 }
 
 void IApplicationFunctions::ExtendSaveData(Kernel::HLERequestContext& ctx) {
+    struct Parameters {
+        FileSys::SaveDataType type;
+        u128 user_id;
+        u64 new_normal_size;
+        u64 new_journal_size;
+    };
+    static_assert(sizeof(Parameters) == 40);
+
     IPC::RequestParser rp{ctx};
-    const auto type{rp.PopRaw<FileSys::SaveDataType>()};
-    rp.Skip(1, false);
-    const auto user_id{rp.PopRaw<u128>()};
-    const auto new_normal_size{rp.PopRaw<u64>()};
-    const auto new_journal_size{rp.PopRaw<u64>()};
+    const auto [type, user_id, new_normal_size, new_journal_size] = rp.PopRaw<Parameters>();
 
     LOG_DEBUG(Service_AM,
               "called with type={:02X}, user_id={:016X}{:016X}, new_normal={:016X}, "
@@ -1334,10 +1445,14 @@ void IApplicationFunctions::ExtendSaveData(Kernel::HLERequestContext& ctx) {
 }
 
 void IApplicationFunctions::GetSaveDataSize(Kernel::HLERequestContext& ctx) {
+    struct Parameters {
+        FileSys::SaveDataType type;
+        u128 user_id;
+    };
+    static_assert(sizeof(Parameters) == 24);
+
     IPC::RequestParser rp{ctx};
-    const auto type{rp.PopRaw<FileSys::SaveDataType>()};
-    rp.Skip(1, false);
-    const auto user_id{rp.PopRaw<u128>()};
+    const auto [type, user_id] = rp.PopRaw<Parameters>();
 
     LOG_DEBUG(Service_AM, "called with type={:02X}, user_id={:016X}{:016X}", static_cast<u8>(type),
               user_id[1], user_id[0]);
@@ -1349,6 +1464,22 @@ void IApplicationFunctions::GetSaveDataSize(Kernel::HLERequestContext& ctx) {
     rb.Push(RESULT_SUCCESS);
     rb.Push(size.normal);
     rb.Push(size.journal);
+}
+
+void IApplicationFunctions::QueryApplicationPlayStatistics(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(RESULT_SUCCESS);
+    rb.Push<u32>(0);
+}
+
+void IApplicationFunctions::QueryApplicationPlayStatisticsByUid(Kernel::HLERequestContext& ctx) {
+    LOG_WARNING(Service_AM, "(STUBBED) called");
+
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(RESULT_SUCCESS);
+    rb.Push<u32>(0);
 }
 
 void IApplicationFunctions::GetGpuErrorDetectedSystemEvent(Kernel::HLERequestContext& ctx) {
@@ -1384,6 +1515,8 @@ IHomeMenuFunctions::IHomeMenuFunctions() : ServiceFramework("IHomeMenuFunctions"
         {30, nullptr, "GetHomeButtonWriterLockAccessor"},
         {31, nullptr, "GetWriterLockAccessorEx"},
         {100, nullptr, "PopRequestLaunchApplicationForDebug"},
+        {110, nullptr, "IsForceTerminateApplicationDisabledForDebug"},
+        {200, nullptr, "LaunchDevMenu"},
     };
     // clang-format on
 

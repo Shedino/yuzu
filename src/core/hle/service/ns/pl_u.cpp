@@ -19,6 +19,7 @@
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/system_archive/system_archive.h"
 #include "core/hle/ipc_helpers.h"
+#include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/physical_memory.h"
 #include "core/hle/kernel/shared_memory.h"
 #include "core/hle/service/filesystem/filesystem.h"
@@ -97,7 +98,7 @@ void EncryptSharedFont(const std::vector<u32>& input, std::vector<u8>& output,
     const auto key = Common::swap32(EXPECTED_RESULT ^ EXPECTED_MAGIC);
     std::vector<u32> transformed_font(input.size() + 2);
     transformed_font[0] = Common::swap32(EXPECTED_MAGIC);
-    transformed_font[1] = Common::swap32(input.size() * sizeof(u32)) ^ key;
+    transformed_font[1] = Common::swap32(static_cast<u32>(input.size() * sizeof(u32))) ^ key;
     std::transform(input.begin(), input.end(), transformed_font.begin() + 2,
                    [key](u32 in) { return in ^ key; });
     std::memcpy(output.data() + offset, transformed_font.data(),
@@ -141,7 +142,7 @@ struct PL_U::Impl {
     }
 
     /// Handle to shared memory region designated for a shared font
-    Kernel::SharedPtr<Kernel::SharedMemory> shared_font_mem;
+    std::shared_ptr<Kernel::SharedMemory> shared_font_mem;
 
     /// Backing memory for the shared font data
     std::shared_ptr<Kernel::PhysicalMemory> shared_font;
@@ -152,7 +153,7 @@ struct PL_U::Impl {
 
 PL_U::PL_U(Core::System& system)
     : ServiceFramework("pl:u"), impl{std::make_unique<Impl>()}, system(system) {
-
+    // clang-format off
     static const FunctionInfo functions[] = {
         {0, &PL_U::RequestLoad, "RequestLoad"},
         {1, &PL_U::GetLoadState, "GetLoadState"},
@@ -160,7 +161,13 @@ PL_U::PL_U(Core::System& system)
         {3, &PL_U::GetSharedMemoryAddressOffset, "GetSharedMemoryAddressOffset"},
         {4, &PL_U::GetSharedMemoryNativeHandle, "GetSharedMemoryNativeHandle"},
         {5, &PL_U::GetSharedFontInOrderOfPriority, "GetSharedFontInOrderOfPriority"},
+        {6, nullptr, "GetSharedFontInOrderOfPriorityForSystem"},
+        {100, nullptr, "RequestApplicationFunctionAuthorization"},
+        {101, nullptr, "RequestApplicationFunctionAuthorizationForSystem"},
+        {1000, nullptr, "LoadNgWordDataForPlatformRegionChina"},
+        {1001, nullptr, "GetNgWordDataSizeForPlatformRegionChina"},
     };
+    // clang-format on
     RegisterHandlers(functions);
 
     auto& fsc = system.GetFileSystemController();
@@ -259,16 +266,13 @@ void PL_U::GetSharedMemoryAddressOffset(Kernel::HLERequestContext& ctx) {
 void PL_U::GetSharedMemoryNativeHandle(Kernel::HLERequestContext& ctx) {
     // Map backing memory for the font data
     LOG_DEBUG(Service_NS, "called");
-    system.CurrentProcess()->VMManager().MapMemoryBlock(SHARED_FONT_MEM_VADDR, impl->shared_font, 0,
-                                                        SHARED_FONT_MEM_SIZE,
-                                                        Kernel::MemoryState::Shared);
 
     // Create shared font memory object
     auto& kernel = system.Kernel();
-    impl->shared_font_mem = Kernel::SharedMemory::Create(
-        kernel, system.CurrentProcess(), SHARED_FONT_MEM_SIZE, Kernel::MemoryPermission::ReadWrite,
-        Kernel::MemoryPermission::Read, SHARED_FONT_MEM_VADDR, Kernel::MemoryRegion::BASE,
-        "PL_U:shared_font_mem");
+    impl->shared_font_mem = SharedFrom(&kernel.GetFontSharedMem());
+
+    std::memcpy(impl->shared_font_mem->GetPointer(), impl->shared_font->data(),
+                impl->shared_font->size());
 
     IPC::ResponseBuilder rb{ctx, 2, 1};
     rb.Push(RESULT_SUCCESS);

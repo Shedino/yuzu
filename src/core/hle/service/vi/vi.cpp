@@ -45,7 +45,7 @@ struct DisplayInfo {
 
     /// Whether or not the display has a limited number of layers.
     u8 has_limited_layers{1};
-    INSERT_PADDING_BYTES(7){};
+    INSERT_PADDING_BYTES(7);
 
     /// Indicates the total amount of layers supported by the display.
     /// @note This is only valid if has_limited_layers is set.
@@ -101,8 +101,8 @@ public:
     }
 
     std::u16string ReadInterfaceToken() {
-        u32 unknown = Read<u32_le>();
-        u32 length = Read<u32_le>();
+        [[maybe_unused]] const u32 unknown = Read<u32_le>();
+        const u32 length = Read<u32_le>();
 
         std::u16string token{};
 
@@ -513,7 +513,8 @@ private:
 
         auto& buffer_queue = nv_flinger->FindBufferQueue(id);
 
-        if (transaction == TransactionId::Connect) {
+        switch (transaction) {
+        case TransactionId::Connect: {
             IGBPConnectRequestParcel request{ctx.ReadBuffer()};
             IGBPConnectResponseParcel response{
                 static_cast<u32>(static_cast<u32>(DisplayResolution::UndockedWidth) *
@@ -521,14 +522,18 @@ private:
                 static_cast<u32>(static_cast<u32>(DisplayResolution::UndockedHeight) *
                                  Settings::values.resolution_factor)};
             ctx.WriteBuffer(response.Serialize());
-        } else if (transaction == TransactionId::SetPreallocatedBuffer) {
+            break;
+        }
+        case TransactionId::SetPreallocatedBuffer: {
             IGBPSetPreallocatedBufferRequestParcel request{ctx.ReadBuffer()};
 
             buffer_queue.SetPreallocatedBuffer(request.data.slot, request.buffer);
 
             IGBPSetPreallocatedBufferResponseParcel response{};
             ctx.WriteBuffer(response.Serialize());
-        } else if (transaction == TransactionId::DequeueBuffer) {
+            break;
+        }
+        case TransactionId::DequeueBuffer: {
             IGBPDequeueBufferRequestParcel request{ctx.ReadBuffer()};
             const u32 width{request.data.width};
             const u32 height{request.data.height};
@@ -541,8 +546,8 @@ private:
             } else {
                 // Wait the current thread until a buffer becomes available
                 ctx.SleepClientThread(
-                    "IHOSBinderDriver::DequeueBuffer", -1,
-                    [=](Kernel::SharedPtr<Kernel::Thread> thread, Kernel::HLERequestContext& ctx,
+                    "IHOSBinderDriver::DequeueBuffer", UINT64_MAX,
+                    [=](std::shared_ptr<Kernel::Thread> thread, Kernel::HLERequestContext& ctx,
                         Kernel::ThreadWakeupReason reason) {
                         // Repeat TransactParcel DequeueBuffer when a buffer is available
                         auto& buffer_queue = nv_flinger->FindBufferQueue(id);
@@ -556,14 +561,18 @@ private:
                     },
                     buffer_queue.GetWritableBufferWaitEvent());
             }
-        } else if (transaction == TransactionId::RequestBuffer) {
+            break;
+        }
+        case TransactionId::RequestBuffer: {
             IGBPRequestBufferRequestParcel request{ctx.ReadBuffer()};
 
             auto& buffer = buffer_queue.RequestBuffer(request.slot);
 
             IGBPRequestBufferResponseParcel response{buffer};
             ctx.WriteBuffer(response.Serialize());
-        } else if (transaction == TransactionId::QueueBuffer) {
+            break;
+        }
+        case TransactionId::QueueBuffer: {
             IGBPQueueBufferRequestParcel request{ctx.ReadBuffer()};
 
             buffer_queue.QueueBuffer(request.data.slot, request.data.transform,
@@ -572,7 +581,9 @@ private:
 
             IGBPQueueBufferResponseParcel response{1280, 720};
             ctx.WriteBuffer(response.Serialize());
-        } else if (transaction == TransactionId::Query) {
+            break;
+        }
+        case TransactionId::Query: {
             IGBPQueryRequestParcel request{ctx.ReadBuffer()};
 
             const u32 value =
@@ -580,15 +591,30 @@ private:
 
             IGBPQueryResponseParcel response{value};
             ctx.WriteBuffer(response.Serialize());
-        } else if (transaction == TransactionId::CancelBuffer) {
+            break;
+        }
+        case TransactionId::CancelBuffer: {
             LOG_CRITICAL(Service_VI, "(STUBBED) called, transaction=CancelBuffer");
-        } else if (transaction == TransactionId::Disconnect ||
-                   transaction == TransactionId::DetachBuffer) {
+            break;
+        }
+        case TransactionId::Disconnect: {
+            LOG_WARNING(Service_VI, "(STUBBED) called, transaction=Disconnect");
+            const auto buffer = ctx.ReadBuffer();
+
+            buffer_queue.Disconnect();
+
+            IGBPEmptyResponseParcel response{};
+            ctx.WriteBuffer(response.Serialize());
+            break;
+        }
+        case TransactionId::DetachBuffer: {
             const auto buffer = ctx.ReadBuffer();
 
             IGBPEmptyResponseParcel response{};
             ctx.WriteBuffer(response.Serialize());
-        } else {
+            break;
+        }
+        default:
             ASSERT_MSG(false, "Unimplemented");
         }
 
@@ -731,6 +757,7 @@ class IManagerDisplayService final : public ServiceFramework<IManagerDisplayServ
 public:
     explicit IManagerDisplayService(std::shared_ptr<NVFlinger::NVFlinger> nv_flinger)
         : ServiceFramework("IManagerDisplayService"), nv_flinger(std::move(nv_flinger)) {
+        // clang-format off
         static const FunctionInfo functions[] = {
             {200, nullptr, "AllocateProcessHeapBlock"},
             {201, nullptr, "FreeProcessHeapBlock"},
@@ -766,8 +793,11 @@ public:
             {6008, nullptr, "StartLayerPresentationFenceWait"},
             {6009, nullptr, "StopLayerPresentationFenceWait"},
             {6010, nullptr, "GetLayerPresentationAllFencesExpiredEvent"},
+            {6011, nullptr, "EnableLayerAutoClearTransitionBuffer"},
+            {6012, nullptr, "DisableLayerAutoClearTransitionBuffer"},
             {7000, nullptr, "SetContentVisibility"},
             {8000, nullptr, "SetConductorLayer"},
+            {8001, nullptr, "SetTimestampTracking"},
             {8100, nullptr, "SetIndirectProducerFlipOffset"},
             {8200, nullptr, "CreateSharedBufferStaticStorage"},
             {8201, nullptr, "CreateSharedBufferTransferMemory"},
@@ -800,6 +830,8 @@ public:
             {8297, nullptr, "GetSharedFrameBufferContentParameter"},
             {8298, nullptr, "ExpandStartupLogoOnSharedFrameBuffer"},
         };
+        // clang-format on
+
         RegisterHandlers(functions);
     }
 
@@ -1060,6 +1092,18 @@ private:
         rb.Push<u64>(ctx.WriteBuffer(native_window.Serialize()));
     }
 
+    void CloseLayer(Kernel::HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const auto layer_id{rp.Pop<u64>()};
+
+        LOG_DEBUG(Service_VI, "called. layer_id=0x{:016X}", layer_id);
+
+        nv_flinger->CloseLayer(layer_id);
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(RESULT_SUCCESS);
+    }
+
     void CreateStrayLayer(Kernel::HLERequestContext& ctx) {
         IPC::RequestParser rp{ctx};
         const u32 flags = rp.Pop<u32>();
@@ -1172,7 +1216,7 @@ IApplicationDisplayService::IApplicationDisplayService(
         {1101, &IApplicationDisplayService::SetDisplayEnabled, "SetDisplayEnabled"},
         {1102, &IApplicationDisplayService::GetDisplayResolution, "GetDisplayResolution"},
         {2020, &IApplicationDisplayService::OpenLayer, "OpenLayer"},
-        {2021, nullptr, "CloseLayer"},
+        {2021, &IApplicationDisplayService::CloseLayer, "CloseLayer"},
         {2030, &IApplicationDisplayService::CreateStrayLayer, "CreateStrayLayer"},
         {2031, &IApplicationDisplayService::DestroyStrayLayer, "DestroyStrayLayer"},
         {2101, &IApplicationDisplayService::SetLayerScalingMode, "SetLayerScalingMode"},

@@ -111,6 +111,14 @@ void SET::GetLanguageCode(Kernel::HLERequestContext& ctx) {
     rb.PushEnum(available_language_codes[Settings::values.language_index]);
 }
 
+void SET::GetRegionCode(Kernel::HLERequestContext& ctx) {
+    LOG_DEBUG(Service_SET, "called");
+
+    IPC::ResponseBuilder rb{ctx, 3};
+    rb.Push(RESULT_SUCCESS);
+    rb.Push(Settings::values.region_index);
+}
+
 SET::SET() : ServiceFramework("set") {
     // clang-format off
     static const FunctionInfo functions[] = {
@@ -118,12 +126,13 @@ SET::SET() : ServiceFramework("set") {
         {1, &SET::GetAvailableLanguageCodes, "GetAvailableLanguageCodes"},
         {2, &SET::MakeLanguageCode, "MakeLanguageCode"},
         {3, &SET::GetAvailableLanguageCodeCount, "GetAvailableLanguageCodeCount"},
-        {4, nullptr, "GetRegionCode"},
+        {4, &SET::GetRegionCode, "GetRegionCode"},
         {5, &SET::GetAvailableLanguageCodes2, "GetAvailableLanguageCodes2"},
         {6, &SET::GetAvailableLanguageCodeCount2, "GetAvailableLanguageCodeCount2"},
         {7, nullptr, "GetKeyCodeMap"},
         {8, &SET::GetQuestFlag, "GetQuestFlag"},
         {9, nullptr, "GetKeyCodeMap2"},
+        {10, nullptr, "GetFirmwareVersionForDebug"},
     };
     // clang-format on
 

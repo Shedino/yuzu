@@ -9,7 +9,6 @@
 #include <glad/glad.h>
 
 #include "video_core/renderer_opengl/gl_resource_manager.h"
-#include "video_core/renderer_opengl/gl_state.h"
 #include "video_core/renderer_opengl/maxwell_to_gl.h"
 
 namespace OpenGL::GLShader {
@@ -18,17 +17,12 @@ namespace OpenGL::GLShader {
 /// @note Always keep a vec4 at the end. The GL spec is not clear whether the alignment at
 ///       the end of a uniform block is included in UNIFORM_BLOCK_DATA_SIZE or not.
 ///       Not following that rule will cause problems on some AMD drivers.
-struct MaxwellUniformData {
-    void SetFromRegs(const Tegra::Engines::Maxwell3D& maxwell, std::size_t shader_stage);
+struct alignas(16) MaxwellUniformData {
+    void SetFromRegs(const Tegra::Engines::Maxwell3D& maxwell);
 
-    alignas(16) GLvec4 viewport_flip;
-    struct alignas(16) {
-        GLuint instance_id;
-        GLuint flip_stage;
-        GLfloat y_direction;
-    };
+    GLfloat y_direction;
 };
-static_assert(sizeof(MaxwellUniformData) == 32, "MaxwellUniformData structure size is incorrect");
+static_assert(sizeof(MaxwellUniformData) == 16, "MaxwellUniformData structure size is incorrect");
 static_assert(sizeof(MaxwellUniformData) < 16384,
               "MaxwellUniformData structure must be less than 16kb as per the OpenGL spec");
 
@@ -37,45 +31,47 @@ public:
     explicit ProgramManager();
     ~ProgramManager();
 
-    void ApplyTo(OpenGLState& state);
+    void Create();
 
-    void UseProgrammableVertexShader(GLuint program) {
+    /// Updates the graphics pipeline and binds it.
+    void BindGraphicsPipeline();
+
+    /// Binds a compute shader.
+    void BindComputeShader(GLuint program);
+
+    void UseVertexShader(GLuint program) {
         current_state.vertex_shader = program;
     }
 
-    void UseProgrammableGeometryShader(GLuint program) {
+    void UseGeometryShader(GLuint program) {
         current_state.geometry_shader = program;
     }
 
-    void UseProgrammableFragmentShader(GLuint program) {
+    void UseFragmentShader(GLuint program) {
         current_state.fragment_shader = program;
-    }
-
-    void UseTrivialGeometryShader() {
-        current_state.geometry_shader = 0;
     }
 
 private:
     struct PipelineState {
-        bool operator==(const PipelineState& rhs) const {
+        bool operator==(const PipelineState& rhs) const noexcept {
             return vertex_shader == rhs.vertex_shader && fragment_shader == rhs.fragment_shader &&
                    geometry_shader == rhs.geometry_shader;
         }
 
-        bool operator!=(const PipelineState& rhs) const {
+        bool operator!=(const PipelineState& rhs) const noexcept {
             return !operator==(rhs);
         }
 
-        GLuint vertex_shader{};
-        GLuint fragment_shader{};
-        GLuint geometry_shader{};
+        GLuint vertex_shader = 0;
+        GLuint fragment_shader = 0;
+        GLuint geometry_shader = 0;
     };
 
-    void UpdatePipeline();
-
-    OGLPipeline pipeline;
+    OGLPipeline graphics_pipeline;
+    OGLPipeline compute_pipeline;
     PipelineState current_state;
     PipelineState old_state;
+    bool is_graphics_bound = true;
 };
 
 } // namespace OpenGL::GLShader

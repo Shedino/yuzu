@@ -16,18 +16,14 @@
 #include "core/hle/service/nfp/nfp_user.h"
 
 namespace Service::NFP {
-
 namespace ErrCodes {
-[[maybe_unused]] constexpr ResultCode ERR_TAG_FAILED(ErrorModule::NFP,
-                                                     -1); // TODO(ogniK): Find the actual error code
 constexpr ResultCode ERR_NO_APPLICATION_AREA(ErrorModule::NFP, 152);
 } // namespace ErrCodes
 
 Module::Interface::Interface(std::shared_ptr<Module> module, Core::System& system, const char* name)
     : ServiceFramework(name), module(std::move(module)), system(system) {
     auto& kernel = system.Kernel();
-    nfc_tag_load = Kernel::WritableEvent::CreateEventPair(kernel, Kernel::ResetType::Automatic,
-                                                          "IUser:NFCTagDetected");
+    nfc_tag_load = Kernel::WritableEvent::CreateEventPair(kernel, "IUser:NFCTagDetected");
 }
 
 Module::Interface::~Interface() = default;
@@ -66,10 +62,9 @@ public:
         RegisterHandlers(functions);
 
         auto& kernel = system.Kernel();
-        deactivate_event = Kernel::WritableEvent::CreateEventPair(
-            kernel, Kernel::ResetType::Automatic, "IUser:DeactivateEvent");
-        availability_change_event = Kernel::WritableEvent::CreateEventPair(
-            kernel, Kernel::ResetType::Automatic, "IUser:AvailabilityChangeEvent");
+        deactivate_event = Kernel::WritableEvent::CreateEventPair(kernel, "IUser:DeactivateEvent");
+        availability_change_event =
+            Kernel::WritableEvent::CreateEventPair(kernel, "IUser:AvailabilityChangeEvent");
     }
 
 private:
@@ -194,7 +189,7 @@ private:
         LOG_DEBUG(Service_NFP, "called");
 
         auto nfc_event = nfp_interface.GetNFCEvent();
-        if (!nfc_event->ShouldWait(Kernel::GetCurrentThread()) && !has_attached_handle) {
+        if (!nfc_event->ShouldWait(&ctx.GetThread()) && !has_attached_handle) {
             device_state = DeviceState::TagFound;
             nfc_event->Clear();
         }
@@ -347,7 +342,7 @@ bool Module::Interface::LoadAmiibo(const std::vector<u8>& buffer) {
     return true;
 }
 
-const Kernel::SharedPtr<Kernel::ReadableEvent>& Module::Interface::GetNFCEvent() const {
+const std::shared_ptr<Kernel::ReadableEvent>& Module::Interface::GetNFCEvent() const {
     return nfc_tag_load.readable;
 }
 

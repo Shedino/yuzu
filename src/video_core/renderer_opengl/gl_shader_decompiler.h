@@ -6,38 +6,20 @@
 
 #include <array>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 #include "common/common_types.h"
 #include "video_core/engines/maxwell_3d.h"
+#include "video_core/engines/shader_type.h"
+#include "video_core/shader/registry.h"
 #include "video_core/shader/shader_ir.h"
-
-namespace VideoCommon::Shader {
-class ShaderIR;
-}
 
 namespace OpenGL {
 
 class Device;
 
-enum class ProgramType : u32 {
-    VertexA = 0,
-    VertexB = 1,
-    TessellationControl = 2,
-    TessellationEval = 3,
-    Geometry = 4,
-    Fragment = 5,
-    Compute = 6
-};
-
-} // namespace OpenGL
-
-namespace OpenGL::GLShader {
-
-struct ShaderEntries;
-
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
-using ProgramResult = std::pair<std::string, ShaderEntries>;
 using SamplerEntry = VideoCommon::Shader::Sampler;
 using ImageEntry = VideoCommon::Shader::Image;
 
@@ -85,17 +67,18 @@ private:
 
 struct ShaderEntries {
     std::vector<ConstBufferEntry> const_buffers;
-    std::vector<SamplerEntry> samplers;
-    std::vector<SamplerEntry> bindless_samplers;
-    std::vector<ImageEntry> images;
     std::vector<GlobalMemoryEntry> global_memory_entries;
-    std::array<bool, Maxwell::NumClipDistances> clip_distances{};
+    std::vector<SamplerEntry> samplers;
+    std::vector<ImageEntry> images;
+    u32 clip_distances{};
     std::size_t shader_length{};
 };
 
-std::string GetCommonDeclarations();
+ShaderEntries MakeEntries(const VideoCommon::Shader::ShaderIR& ir);
 
-ProgramResult Decompile(const Device& device, const VideoCommon::Shader::ShaderIR& ir,
-                        ProgramType stage, const std::string& suffix);
+std::string DecompileShader(const Device& device, const VideoCommon::Shader::ShaderIR& ir,
+                            const VideoCommon::Shader::Registry& registry,
+                            Tegra::Engines::ShaderType stage, std::string_view identifier,
+                            std::string_view suffix = {});
 
-} // namespace OpenGL::GLShader
+} // namespace OpenGL

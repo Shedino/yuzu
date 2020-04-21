@@ -5,6 +5,7 @@
 #pragma once
 
 #include <array>
+#include <list>
 #include <map>
 #include <optional>
 #include <set>
@@ -18,6 +19,7 @@
 #include "video_core/shader/ast.h"
 #include "video_core/shader/compiler_settings.h"
 #include "video_core/shader/node.h"
+#include "video_core/shader/registry.h"
 
 namespace VideoCommon::Shader {
 
@@ -47,7 +49,7 @@ public:
     }
 
     u32 GetSize() const {
-        return max_offset + sizeof(float);
+        return max_offset + static_cast<u32>(sizeof(float));
     }
 
     u32 GetMaxOffset() const {
@@ -66,8 +68,8 @@ struct GlobalMemoryUsage {
 
 class ShaderIR final {
 public:
-    explicit ShaderIR(const ProgramCode& program_code, u32 main_offset, std::size_t size,
-                      CompilerSettings settings);
+    explicit ShaderIR(const ProgramCode& program_code, u32 main_offset, CompilerSettings settings,
+                      Registry& registry);
     ~ShaderIR();
 
     const std::map<u32, NodeBlock>& GetBasicBlocks() const {
@@ -94,11 +96,11 @@ public:
         return used_cbufs;
     }
 
-    const std::set<Sampler>& GetSamplers() const {
+    const std::list<Sampler>& GetSamplers() const {
         return used_samplers;
     }
 
-    const std::map<u64, Image>& GetImages() const {
+    const std::list<Image>& GetImages() const {
         return used_images;
     }
 
@@ -135,6 +137,14 @@ public:
         return uses_vertex_id;
     }
 
+    bool UsesLegacyVaryings() const {
+        return uses_legacy_varyings;
+    }
+
+    bool UsesWarps() const {
+        return uses_warps;
+    }
+
     bool HasPhysicalAttributes() const {
         return uses_physical_attributes;
     }
@@ -163,16 +173,33 @@ public:
         return program_manager.GetVariables();
     }
 
-    u32 ConvertAddressToNvidiaSpace(const u32 address) const {
-        return (address - main_offset) * sizeof(Tegra::Shader::Instruction);
+    u32 ConvertAddressToNvidiaSpace(u32 address) const {
+        return (address - main_offset) * static_cast<u32>(sizeof(Tegra::Shader::Instruction));
     }
 
     /// Returns a condition code evaluated from internal flags
     Node GetConditionCode(Tegra::Shader::ConditionCode cc) const;
 
+    const Node& GetAmendNode(std::size_t index) const {
+        return amend_code[index];
+    }
+
+    u32 GetNumCustomVariables() const {
+        return num_custom_variables;
+    }
+
 private:
     friend class ASTDecoder;
+
+    struct SamplerInfo {
+        Tegra::Shader::TextureType type;
+        bool is_array;
+        bool is_shadow;
+        bool is_buffer;
+    };
+
     void Decode();
+    void PostDecode();
 
     NodeBlock DecodeRange(u32 begin, u32 end);
     void DecodeRangeInner(NodeBlock& bb, u32 begin, u32 end);
@@ -217,6 +244,8 @@ private:
 
     /// Generates a node for a passed register.
     Node GetRegister(Tegra::Shader::Register reg);
+    /// Generates a node for a custom variable
+    Node GetCustomVariable(u32 id);
     /// Generates a node representing a 19-bit immediate value
     Node GetImmediate19(Tegra::Shader::Instruction instr);
     /// Generates a node representing a 32-bit immediate value
@@ -283,6 +312,10 @@ private:
     /// Conditionally saturates a half float pair
     Node GetSaturatedHalfFloat(Node value, bool saturate = true);
 
+    /// Get image component value by type and size
+    std::pair<Node, bool> GetComponentValue(Tegra::Texture::ComponentType component_type,
+                                            u32 component_size, Node original_value);
+
     /// Returns a predicate comparing two floats
     Node GetPredicateComparisonFloat(Tegra::Shader::PredCondition condition, Node op_a, Node op_b);
     /// Returns a predicate comparing two integers
@@ -294,14 +327,17 @@ private:
     /// Returns a predicate combiner operation
     OperationCode GetPredicateCombiner(Tegra::Shader::PredOperation operation);
 
-    /// Accesses a texture sampler
-    const Sampler& GetSampler(const Tegra::Shader::Sampler& sampler,
-                              Tegra::Shader::TextureType type, bool is_array, bool is_shadow);
+    /// Queries the missing sampler info from the execution context.
+    SamplerInfo GetSamplerInfo(std::optional<SamplerInfo> sampler_info, u32 offset,
+                               std::optional<u32> buffer = std::nullopt);
 
-    // Accesses a texture sampler for a bindless texture.
-    const Sampler& GetBindlessSampler(const Tegra::Shader::Register& reg,
-                                      Tegra::Shader::TextureType type, bool is_array,
-                                      bool is_shadow);
+    /// Accesses a texture sampler
+    const Sampler* GetSampler(const Tegra::Shader::Sampler& sampler,
+                              std::optional<SamplerInfo> sampler_info = std::nullopt);
+
+    /// Accesses a texture sampler for a bindless texture.
+    const Sampler* GetBindlessSampler(Tegra::Shader::Register reg, Node& index_var,
+                                      std::optional<SamplerInfo> sampler_info = std::nullopt);
 
     /// Accesses an image.
     Image& GetImage(Tegra::Shader::Image image, Tegra::Shader::ImageType type);
@@ -309,22 +345,25 @@ private:
     /// Access a bindless image sampler.
     Image& GetBindlessImage(Tegra::Shader::Register reg, Tegra::Shader::ImageType type);
 
-    /// Tries to access an existing image, updating it's state as needed
-    Image* TryUseExistingImage(u64 offset, Tegra::Shader::ImageType type);
-
     /// Extracts a sequence of bits from a node
     Node BitfieldExtract(Node value, u32 offset, u32 bits);
 
     /// Inserts a sequence of bits from a node
     Node BitfieldInsert(Node base, Node insert, u32 offset, u32 bits);
 
+    /// Marks the usage of a input or output attribute.
+    void MarkAttributeUsage(Tegra::Shader::Attribute::Index index, u64 element);
+
+    /// Decodes VMNMX instruction and inserts its code into the passed basic block.
+    void DecodeVMNMX(NodeBlock& bb, Tegra::Shader::Instruction instr);
+
     void WriteTexInstructionFloat(NodeBlock& bb, Tegra::Shader::Instruction instr,
                                   const Node4& components);
 
     void WriteTexsInstructionFloat(NodeBlock& bb, Tegra::Shader::Instruction instr,
-                                   const Node4& components);
+                                   const Node4& components, bool ignore_mask = false);
     void WriteTexsInstructionHalfFloat(NodeBlock& bb, Tegra::Shader::Instruction instr,
-                                       const Node4& components);
+                                       const Node4& components, bool ignore_mask = false);
 
     Node4 GetTexCode(Tegra::Shader::Instruction instr, Tegra::Shader::TextureType texture_type,
                      Tegra::Shader::TextureProcessMode process_mode, bool depth_compare,
@@ -336,7 +375,8 @@ private:
                       bool is_array);
 
     Node4 GetTld4Code(Tegra::Shader::Instruction instr, Tegra::Shader::TextureType texture_type,
-                      bool depth_compare, bool is_array, bool is_aoffi);
+                      bool depth_compare, bool is_array, bool is_aoffi, bool is_ptp,
+                      bool is_bindless);
 
     Node4 GetTldCode(Tegra::Shader::Instruction instr);
 
@@ -348,6 +388,8 @@ private:
         bool lod_bias_enabled, std::size_t max_coords, std::size_t max_inputs);
 
     std::vector<Node> GetAoffiCoordinates(Node aoffi_reg, std::size_t coord_count, bool is_tld4);
+
+    std::vector<Node> GetPtpCoordinates(std::array<Node, 2> ptp_regs);
 
     Node4 GetTextureCode(Tegra::Shader::Instruction instr, Tegra::Shader::TextureType texture_type,
                          Tegra::Shader::TextureProcessMode process_mode, std::vector<Node> coords,
@@ -366,17 +408,28 @@ private:
 
     std::tuple<Node, u32, u32> TrackCbuf(Node tracked, const NodeBlock& code, s64 cursor) const;
 
+    std::tuple<Node, TrackSampler> TrackBindlessSampler(Node tracked, const NodeBlock& code,
+                                                        s64 cursor);
+
     std::optional<u32> TrackImmediate(Node tracked, const NodeBlock& code, s64 cursor) const;
 
     std::pair<Node, s64> TrackRegister(const GprNode* tracked, const NodeBlock& code,
                                        s64 cursor) const;
 
-    std::tuple<Node, Node, GlobalMemoryBase> TrackAndGetGlobalMemory(
-        NodeBlock& bb, Tegra::Shader::Instruction instr, bool is_write);
+    std::tuple<Node, Node, GlobalMemoryBase> TrackGlobalMemory(NodeBlock& bb,
+                                                               Tegra::Shader::Instruction instr,
+                                                               bool is_read, bool is_write);
+
+    /// Register new amending code and obtain the reference id.
+    std::size_t DeclareAmend(Node new_amend);
+
+    u32 NewCustomVariable();
 
     const ProgramCode& program_code;
     const u32 main_offset;
-    const std::size_t program_size;
+    const CompilerSettings settings;
+    Registry& registry;
+
     bool decompiled{};
     bool disable_flow_stack{};
 
@@ -385,16 +438,17 @@ private:
 
     std::map<u32, NodeBlock> basic_blocks;
     NodeBlock global_code;
-    ASTManager program_manager;
-    CompilerSettings settings{};
+    ASTManager program_manager{true, true};
+    std::vector<Node> amend_code;
+    u32 num_custom_variables{};
 
     std::set<u32> used_registers;
     std::set<Tegra::Shader::Pred> used_predicates;
     std::set<Tegra::Shader::Attribute::Index> used_input_attributes;
     std::set<Tegra::Shader::Attribute::Index> used_output_attributes;
     std::map<u32, ConstBuffer> used_cbufs;
-    std::set<Sampler> used_samplers;
-    std::map<u64, Image> used_images;
+    std::list<Sampler> used_samplers;
+    std::list<Image> used_images;
     std::array<bool, Tegra::Engines::Maxwell3D::Regs::NumClipDistances> used_clip_distances{};
     std::map<GlobalMemoryBase, GlobalMemoryUsage> used_global_memory;
     bool uses_layer{};
@@ -403,6 +457,9 @@ private:
     bool uses_physical_attributes{}; // Shader uses AL2P or physical attribute read/writes
     bool uses_instance_id{};
     bool uses_vertex_id{};
+    bool uses_legacy_varyings{};
+    bool uses_warps{};
+    bool uses_indexed_samplers{};
 
     Tegra::Shader::Header header;
 };

@@ -2,10 +2,11 @@ add_library(video_core STATIC
     buffer_cache/buffer_block.h
     buffer_cache/buffer_cache.h
     buffer_cache/map_interval.h
+    dirty_flags.cpp
+    dirty_flags.h
     dma_pusher.cpp
     dma_pusher.h
-    debug_utils/debug_utils.cpp
-    debug_utils/debug_utils.h
+    engines/const_buffer_engine_interface.h
     engines/const_buffer_info.h
     engines/engine_upload.cpp
     engines/engine_upload.h
@@ -21,6 +22,7 @@ add_library(video_core STATIC
     engines/maxwell_dma.h
     engines/shader_bytecode.h
     engines/shader_header.h
+    engines/shader_type.h
     gpu.cpp
     gpu.h
     gpu_asynch.cpp
@@ -29,12 +31,17 @@ add_library(video_core STATIC
     gpu_synch.h
     gpu_thread.cpp
     gpu_thread.h
+    guest_driver.cpp
+    guest_driver.h
     macro_interpreter.cpp
     macro_interpreter.h
     memory_manager.cpp
     memory_manager.h
     morton.cpp
     morton.h
+    query_cache.h
+    rasterizer_accelerated.cpp
+    rasterizer_accelerated.h
     rasterizer_cache.cpp
     rasterizer_cache.h
     rasterizer_interface.h
@@ -58,18 +65,18 @@ add_library(video_core STATIC
     renderer_opengl/gl_shader_decompiler.h
     renderer_opengl/gl_shader_disk_cache.cpp
     renderer_opengl/gl_shader_disk_cache.h
-    renderer_opengl/gl_shader_gen.cpp
-    renderer_opengl/gl_shader_gen.h
     renderer_opengl/gl_shader_manager.cpp
     renderer_opengl/gl_shader_manager.h
     renderer_opengl/gl_shader_util.cpp
     renderer_opengl/gl_shader_util.h
-    renderer_opengl/gl_state.cpp
-    renderer_opengl/gl_state.h
+    renderer_opengl/gl_state_tracker.cpp
+    renderer_opengl/gl_state_tracker.h
     renderer_opengl/gl_stream_buffer.cpp
     renderer_opengl/gl_stream_buffer.h
     renderer_opengl/gl_texture_cache.cpp
     renderer_opengl/gl_texture_cache.h
+    renderer_opengl/gl_query_cache.cpp
+    renderer_opengl/gl_query_cache.h
     renderer_opengl/maxwell_to_gl.h
     renderer_opengl/renderer_opengl.cpp
     renderer_opengl/renderer_opengl.h
@@ -107,21 +114,27 @@ add_library(video_core STATIC
     shader/decode/other.cpp
     shader/ast.cpp
     shader/ast.h
-    shader/control_flow.cpp
-    shader/control_flow.h
     shader/compiler_settings.cpp
     shader/compiler_settings.h
+    shader/control_flow.cpp
+    shader/control_flow.h
     shader/decode.cpp
     shader/expr.cpp
     shader/expr.h
     shader/node_helper.cpp
     shader/node_helper.h
     shader/node.h
+    shader/registry.cpp
+    shader/registry.h
     shader/shader_ir.cpp
     shader/shader_ir.h
     shader/track.cpp
+    shader/transform_feedback.cpp
+    shader/transform_feedback.h
     surface.cpp
     surface.h
+    texture_cache/format_lookup_table.cpp
+    texture_cache/format_lookup_table.h
     texture_cache/surface_base.cpp
     texture_cache/surface_base.h
     texture_cache/surface_params.cpp
@@ -135,6 +148,7 @@ add_library(video_core STATIC
     textures/convert.h
     textures/decoders.cpp
     textures/decoders.h
+    textures/texture.cpp
     textures/texture.h
     video_core.cpp
     video_core.h
@@ -142,15 +156,38 @@ add_library(video_core STATIC
 
 if (ENABLE_VULKAN)
     target_sources(video_core PRIVATE
-        renderer_vulkan/declarations.h
+        renderer_vulkan/fixed_pipeline_state.cpp
+        renderer_vulkan/fixed_pipeline_state.h
         renderer_vulkan/maxwell_to_vk.cpp
         renderer_vulkan/maxwell_to_vk.h
+        renderer_vulkan/renderer_vulkan.h
+        renderer_vulkan/renderer_vulkan.cpp
+        renderer_vulkan/vk_blit_screen.cpp
+        renderer_vulkan/vk_blit_screen.h
         renderer_vulkan/vk_buffer_cache.cpp
         renderer_vulkan/vk_buffer_cache.h
+        renderer_vulkan/vk_compute_pass.cpp
+        renderer_vulkan/vk_compute_pass.h
+        renderer_vulkan/vk_compute_pipeline.cpp
+        renderer_vulkan/vk_compute_pipeline.h
+        renderer_vulkan/vk_descriptor_pool.cpp
+        renderer_vulkan/vk_descriptor_pool.h
         renderer_vulkan/vk_device.cpp
         renderer_vulkan/vk_device.h
+        renderer_vulkan/vk_graphics_pipeline.cpp
+        renderer_vulkan/vk_graphics_pipeline.h
+        renderer_vulkan/vk_image.cpp
+        renderer_vulkan/vk_image.h
         renderer_vulkan/vk_memory_manager.cpp
         renderer_vulkan/vk_memory_manager.h
+        renderer_vulkan/vk_pipeline_cache.cpp
+        renderer_vulkan/vk_pipeline_cache.h
+        renderer_vulkan/vk_query_cache.cpp
+        renderer_vulkan/vk_query_cache.h
+        renderer_vulkan/vk_rasterizer.cpp
+        renderer_vulkan/vk_rasterizer.h
+        renderer_vulkan/vk_renderpass_cache.cpp
+        renderer_vulkan/vk_renderpass_cache.h
         renderer_vulkan/vk_resource_manager.cpp
         renderer_vulkan/vk_resource_manager.h
         renderer_vulkan/vk_sampler_cache.cpp
@@ -159,10 +196,23 @@ if (ENABLE_VULKAN)
         renderer_vulkan/vk_scheduler.h
         renderer_vulkan/vk_shader_decompiler.cpp
         renderer_vulkan/vk_shader_decompiler.h
+        renderer_vulkan/vk_shader_util.cpp
+        renderer_vulkan/vk_shader_util.h
+        renderer_vulkan/vk_staging_buffer_pool.cpp
+        renderer_vulkan/vk_staging_buffer_pool.h
+        renderer_vulkan/vk_state_tracker.cpp
+        renderer_vulkan/vk_state_tracker.h
         renderer_vulkan/vk_stream_buffer.cpp
         renderer_vulkan/vk_stream_buffer.h
         renderer_vulkan/vk_swapchain.cpp
-        renderer_vulkan/vk_swapchain.h)
+        renderer_vulkan/vk_swapchain.h
+        renderer_vulkan/vk_texture_cache.cpp
+        renderer_vulkan/vk_texture_cache.h
+        renderer_vulkan/vk_update_descriptor.cpp
+        renderer_vulkan/vk_update_descriptor.h
+        renderer_vulkan/wrapper.cpp
+        renderer_vulkan/wrapper.h
+    )
 
     target_include_directories(video_core PRIVATE sirit ../../externals/Vulkan-Headers/include)
     target_compile_definitions(video_core PRIVATE HAS_VULKAN)
@@ -174,4 +224,10 @@ target_link_libraries(video_core PUBLIC common core)
 target_link_libraries(video_core PRIVATE glad)
 if (ENABLE_VULKAN)
     target_link_libraries(video_core PRIVATE sirit)
+endif()
+
+if (MSVC)
+    target_compile_options(video_core PRIVATE /we4267)
+else()
+    target_compile_options(video_core PRIVATE -Werror=conversion -Wno-error=sign-conversion)
 endif()

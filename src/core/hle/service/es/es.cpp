@@ -52,6 +52,8 @@ public:
             {34, nullptr, "GetEncryptedTicketSize"},
             {35, nullptr, "GetEncryptedTicketData"},
             {36, nullptr, "DeleteAllInactiveELicenseRequiredPersonalizedTicket"},
+            {37, nullptr, "OwnTicket2"},
+            {38, nullptr, "OwnTicket3"},
             {503, nullptr, "GetTitleKey"},
         };
         // clang-format on
@@ -74,7 +76,6 @@ private:
     }
 
     void ImportTicket(Kernel::HLERequestContext& ctx) {
-        IPC::RequestParser rp{ctx};
         const auto ticket = ctx.ReadBuffer();
         const auto cert = ctx.ReadBuffer(1);
 
